@@ -66,7 +66,7 @@ class MainActivity : ComponentActivity() {
             )
 
         val rootLayout = FrameLayout(this).apply {
-            setBackgroundColor(Color.BLACK)
+            setBackgroundColor(Color.parseColor("#141414"))
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -74,7 +74,7 @@ class MainActivity : ComponentActivity() {
         }
 
         webView = WebView(this).apply {
-            setBackgroundColor(Color.BLACK)
+            setBackgroundColor(Color.parseColor("#141414"))
             isFocusable = true
             isFocusableInTouchMode = true
             layoutParams = FrameLayout.LayoutParams(
@@ -124,8 +124,7 @@ class MainActivity : ComponentActivity() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val url = request.url.toString()
                 if (request.isForMainFrame) {
-                    // Блокираме всякакви опити за презареждане или пренасочване на основната страница
-                    return !url.contains("zenoplay.to/tv-show/")
+                    return !url.contains("zenoplay.to")
                 }
                 return false
             }
@@ -255,7 +254,6 @@ class MainActivity : ComponentActivity() {
             if (window.tvInterfaceInitialized) return;
             window.tvInterfaceInitialized = true;
 
-            // 1. Събираме всички сезони и епизоди от DOM преди да скрием сайта
             const seasonsData = [];
             const seasonTabs = document.querySelectorAll('.episode-season-tab');
             seasonTabs.forEach((tab) => {
@@ -266,13 +264,12 @@ class MainActivity : ComponentActivity() {
                 if (block) {
                     const cards = block.querySelectorAll('.episode-card');
                     cards.forEach((card, eIdx) => {
-                        // Предотвратяваме стандартния линк да презарежда страницата при клик
-                        card.addEventListener('click', function(e) { e.preventDefault(); });
                         const imgEl = card.querySelector('img');
                         const titleEl = card.querySelector('strong');
                         episodes.push({
                             title: titleEl ? titleEl.innerText.trim() : ('Епизод ' + (eIdx + 1)),
-                            img: imgEl ? (imgEl.getAttribute('src') || imgEl.dataset.src || '') : '',
+                            img: imgEl ? imgEl.src : '',
+                            href: card.getAttribute('href'),
                             domElement: card
                         });
                     });
@@ -287,35 +284,16 @@ class MainActivity : ComponentActivity() {
 
             if (seasonsData.length === 0) return;
 
-            // 2. Скриваме АБСОЛЮТНО ВСИЧКИ хедъри, менюта и секции на ZenoPlay, включително плаващата навигация!
             const style = document.createElement('style');
             style.innerHTML = `
-                html, body {
-                    overflow: hidden !important;
-                    background: #000000 !important;
-                    margin: 0 !important;
-                    padding: 0 !important;
-                    width: 100vw !important;
-                    height: 100vh !important;
-                }
-                /* Скриваме плаващия хедър (ZenoPlay менюто), банера Country: Spain, епизодите и футъра */
-                header, nav, footer, .site-header, .site-footer, .detail-hero,
-                #episodes, .recommended-section, .player-toolbar,
-                #player-current-episode, [class*="header"], [class*="navbar"], [class*="nav-"] {
+                body { overflow: hidden !important; background: #000 !important; margin: 0 !important; }
+                /* Скриваме горната лента на ZenoPlay и фона, за да не се виждат над видеото */
+                header, nav, footer, .site-header, .detail-hero, .recommended-section, .player-toolbar, #player-current-episode {
                     display: none !important;
-                    opacity: 0 !important;
-                    pointer-events: none !important;
-                    z-index: -1 !important;
-                }
-                #player {
-                    display: block !important;
-                    margin: 0 !important;
-                    padding: 0 !important;
-                    background: #000 !important;
                 }
                 #tv-custom-overlay {
-                    position: fixed; inset: 0; z-index: 2147483640;
-                    background: linear-gradient(180deg, #181818 0%, #0d0d0d 100%);
+                    position: fixed; inset: 0; z-index: 999990;
+                    background: linear-gradient(180deg, #1a1a1a 0%, #101010 100%);
                     color: #fff; font-family: sans-serif;
                     display: flex; flex-direction: column;
                     padding: 28px 40px; box-sizing: border-box;
@@ -329,7 +307,7 @@ class MainActivity : ComponentActivity() {
                     margin: 0; font-size: 34px; color: #E50914; font-weight: 800; letter-spacing: 0.5px;
                 }
                 #tv-status {
-                    font-size: 18px; color: #bbb;
+                    font-size: 18px; color: #aaa;
                 }
                 #tv-seasons-row {
                     display: flex; gap: 12px; overflow-x: auto; padding: 10px 4px;
@@ -342,7 +320,7 @@ class MainActivity : ComponentActivity() {
                     border: 3px solid transparent; transition: all 0.15s ease;
                 }
                 .tv-season-btn.active-season {
-                    background: #383838; color: #fff; border-color: #666;
+                    background: #383838; color: #fff; border-color: #555;
                 }
                 .tv-season-btn.tv-focused {
                     background: #E50914 !important; color: #fff !important;
@@ -381,29 +359,18 @@ class MainActivity : ComponentActivity() {
                     box-shadow: 0 8px 25px rgba(229, 9, 20, 0.65);
                 }
                 #tv-loader {
-                    position: fixed; inset: 0; z-index: 2147483645;
-                    background: #000000; color: #fff;
+                    position: fixed; inset: 0; z-index: 999995;
+                    background: #000; color: #fff;
                     display: none; flex-direction: column;
                     align-items: center; justify-content: center;
-                    font-size: 28px; font-weight: bold; text-align: center;
-                    padding: 30px;
+                    font-size: 28px; font-weight: bold;
                 }
-                #tv-server-toast {
-                    position: fixed; top: 24px; right: 30px; z-index: 2147483647;
-                    background: rgba(20, 20, 20, 0.9); color: #fff;
-                    border-left: 5px solid #E50914; padding: 12px 22px;
-                    font-size: 20px; font-weight: bold; border-radius: 6px;
-                    display: none; pointer-events: none;
-                }
-                /* В режим на гледане плеърът е на абсолютен цял екран с максимален z-index */
                 body.tv-playing-mode #tv-custom-overlay { display: none !important; }
-                body.tv-playing-mode #player-box,
+                body.tv-playing-mode #episodes { display: none !important; }
                 body.tv-playing-mode #player-box iframe {
                     position: fixed !important; top: 0 !important; left: 0 !important;
                     width: 100vw !important; height: 100vh !important;
-                    max-width: 100vw !important; max-height: 100vh !important;
-                    z-index: 2147483646 !important; border: none !important;
-                    margin: 0 !important; padding: 0 !important;
+                    z-index: 9999999 !important; border: none !important;
                     background: #000 !important;
                 }
             `;
@@ -414,7 +381,7 @@ class MainActivity : ComponentActivity() {
             overlay.innerHTML = `
                 <div id="tv-header">
                     <h1>НОВИТЕ СЪСЕДИ</h1>
-                    <div id="tv-status">ОК = Пусни | Във видео: Стрелка Нагоре = Смени сървър | Назад = Меню</div>
+                    <div id="tv-status">Избери със стрелките и натисни ОК (Назад = Списък със сезони)</div>
                 </div>
                 <div id="tv-seasons-row"></div>
                 <div id="tv-episodes-grid"></div>
@@ -423,18 +390,8 @@ class MainActivity : ComponentActivity() {
 
             const loader = document.createElement('div');
             loader.id = 'tv-loader';
-            loader.innerHTML = '<div id="tv-loader-text">Зареждане на епизода...</div>';
+            loader.innerHTML = '<div>Зареждане на епизода...</div>';
             document.body.appendChild(loader);
-
-            const serverToast = document.createElement('div');
-            serverToast.id = 'tv-server-toast';
-            document.body.appendChild(serverToast);
-
-            function showToast(msg) {
-                serverToast.innerText = msg;
-                serverToast.style.display = 'block';
-                setTimeout(() => { serverToast.style.display = 'none'; }, 3500);
-            }
 
             let zone = 'episodes';
             let sIndex = parseInt(localStorage.getItem('tv_last_season') || '0', 10);
@@ -443,11 +400,9 @@ class MainActivity : ComponentActivity() {
             let watchedSeason = sIndex;
             let watchedEp = eIndex;
             let checkTimer = null;
-            let currentServerIdx = 0;
 
             const seasonsRow = document.getElementById('tv-seasons-row');
             const episodesGrid = document.getElementById('tv-episodes-grid');
-            const loaderText = document.getElementById('tv-loader-text');
 
             function renderSeasons() {
                 seasonsRow.innerHTML = '';
@@ -497,29 +452,6 @@ class MainActivity : ComponentActivity() {
                 });
             }
 
-            function getAvailableServerButtons() {
-                const bgBtns = Array.from(document.querySelectorAll('.player-picker[data-player-group="bg"] .player-picker-menu button, .player-picker[data-player-group="bg"] .player-picker-menu [role="menuitem"], .player-picker[data-player-group="bg"] .player-picker-menu a, .player-picker[data-player-group="bg"] .player-picker-menu > *'));
-                if (bgBtns.length > 0) return bgBtns;
-                // Ако за последния епизод няма BG плеър, проверяваме резервните плеъри
-                return Array.from(document.querySelectorAll('.player-picker[data-player-group="en"] .player-picker-menu button, .player-picker[data-player-group="en"] .player-picker-menu > *'));
-            }
-
-            function switchServer() {
-                const btns = getAvailableServerButtons();
-                if (btns.length <= 1) {
-                    showToast('Има само 1 наличен сървър за този епизод');
-                    return;
-                }
-                currentServerIdx = (currentServerIdx + 1) % btns.length;
-                const playerBox = document.getElementById('player-box');
-                if (playerBox) playerBox.innerHTML = '';
-                btns[currentServerIdx].click();
-                showToast('Превключване към Сървър ' + (currentServerIdx + 1) + ' от ' + btns.length + '...');
-                if (window.AndroidTV && window.AndroidTV.clickCenterAfterDelay) {
-                    window.AndroidTV.clickCenterAfterDelay(2400);
-                }
-            }
-
             function playSelectedEpisode() {
                 const season = seasonsData[sIndex];
                 const ep = season.episodes[eIndex];
@@ -529,47 +461,40 @@ class MainActivity : ComponentActivity() {
 
                 watchedSeason = sIndex;
                 watchedEp = eIndex;
-                currentServerIdx = 0;
                 localStorage.setItem('tv_last_season', String(sIndex));
                 localStorage.setItem('tv_last_ep', String(eIndex));
 
                 zone = 'player';
-                loaderText.innerText = 'Зареждане на ' + season.title + ' - ' + ep.title + '...';
                 loader.style.display = 'flex';
 
-                // 1. Изчистваме стария видео плеър И стария списък със сървъри, за да не цъкне стар линк!
                 const playerBox = document.getElementById('player-box');
                 if (playerBox) playerBox.innerHTML = '';
-                document.querySelectorAll('.player-picker-menu').forEach(m => { m.innerHTML = ''; });
 
-                // 2. Показваме секцията на сезона и задействаме истинско MouseEvent събитие върху картата
-                if (season.tabElement) {
-                    season.tabElement.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                // ВАЖНО за последния епизод: ако сайтът вече е маркирал тази карта като активна,
+                // повторният клик се игнорира от ZenoPlay! Затова първо махаме класа active/selected
+                // или кликваме за миг друга карта от същия сезон, преди да кликнем желаната!
+                const allCards = season.episodes;
+                if (allCards.length > 1) {
+                    const dummyIdx = (eIndex === 0) ? 1 : 0;
+                    if (allCards[dummyIdx] && allCards[dummyIdx].domElement) {
+                        allCards[dummyIdx].domElement.click();
+                    }
                 }
 
+                if (season.tabElement) season.tabElement.click();
                 setTimeout(() => {
-                    if (ep.domElement) {
-                        ep.domElement.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                    }
-                }, 250);
+                    if (ep.domElement) ep.domElement.click();
+                }, 180);
 
-                // 3. Изчакваме AJAX заявката да напълни новите сървъри за избрания епизод
                 let attempts = 0;
-                let serverClicked = false;
+                let clickedBg = false;
                 checkTimer = setInterval(() => {
                     attempts++;
-                    const serverBtns = getAvailableServerButtons();
-
-                    if (!serverClicked && serverBtns.length > 0) {
-                        serverClicked = true;
-                        // Отваряме пикъра и избираме първия сървър
-                        const pickerBtn = document.querySelector('.player-picker[data-player-group="bg"] .player-picker-button');
-                        if (pickerBtn) pickerBtn.click();
-                        setTimeout(() => {
-                            if (serverBtns[0]) {
-                                serverBtns[0].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                            }
-                        }, 150);
+                    const bgMenu = document.querySelector('.player-picker[data-player-group="bg"] .player-picker-menu');
+                    // Изчакваме поне 2 такта след клика върху епизода, за да сме сигурни, че менюто е обновено
+                    if (attempts >= 2 && bgMenu && bgMenu.children.length > 0 && !clickedBg) {
+                        clickedBg = true;
+                        bgMenu.children[0].click();
                     }
 
                     const iframe = document.querySelector('#player-box iframe');
@@ -579,19 +504,15 @@ class MainActivity : ComponentActivity() {
                         setTimeout(() => {
                             loader.style.display = 'none';
                             document.body.classList.add('tv-playing-mode');
-                            showToast(season.title + ' - ' + ep.title + ' (Стрелка Нагоре = Смени сървър)');
                             if (window.AndroidTV && window.AndroidTV.clickCenterAfterDelay) {
                                 window.AndroidTV.clickCenterAfterDelay(2200);
                             }
-                        }, 600);
-                    } else if (attempts > 45) {
-                        // Ако след ~11 секунди в сайта изобщо няма качен сървър за този епизод
+                        }, 700);
+                    } else if (attempts > 40) {
                         clearInterval(checkTimer);
                         checkTimer = null;
-                        loaderText.innerText = 'Този епизод все още няма качен видео сървър в сайта.\nВръщане към списъка...';
-                        setTimeout(() => {
-                            window.tvBack();
-                        }, 2500);
+                        loader.style.display = 'none';
+                        window.tvBack();
                     }
                 }, 250);
             }
@@ -600,8 +521,6 @@ class MainActivity : ComponentActivity() {
                 if (zone === 'player') {
                     if (dir === 'ENTER' && window.AndroidTV) {
                         window.AndroidTV.clickCenterAfterDelay(50);
-                    } else if (dir === 'UP') {
-                        switchServer();
                     }
                     return;
                 }
@@ -635,7 +554,7 @@ class MainActivity : ComponentActivity() {
                     } else if (dir === 'DOWN') {
                         if (eIndex + cols < epsCount) {
                             eIndex += cols;
-                        } else if (Math.floor(eIndex / cols) < Math.floor((epsCount - 1) / cols)) {
+                        } else {
                             eIndex = epsCount - 1;
                         }
                     } else if (dir === 'ENTER') {
@@ -651,7 +570,7 @@ class MainActivity : ComponentActivity() {
                     clearInterval(checkTimer);
                     checkTimer = null;
                 }
-                if (zone === 'player' || document.body.classList.contains('tv-playing-mode') || loader.style.display === 'flex') {
+                if (zone === 'player' || document.body.classList.contains('tv-playing-mode')) {
                     loader.style.display = 'none';
                     document.body.classList.remove('tv-playing-mode');
                     const playerBox = document.getElementById('player-box');
