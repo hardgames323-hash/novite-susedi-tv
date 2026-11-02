@@ -1,5 +1,5 @@
 (function() {
-    // Ако случайно страницата се е презаредила на /episode/, веднага я връщаме към главната!
+    // Ако сме попаднали на /episode/ страница, веднага връщаме към главната страница със сезоните
     if (window.location.pathname.indexOf('/episode/') !== -1) {
         window.location.replace('https://zenoplay.to/tv-show/novite-sasedi-2007/');
         return;
@@ -20,16 +20,10 @@
             cards.forEach((card, eIdx) => {
                 const imgEl = card.querySelector('img');
                 const titleEl = card.querySelector('strong');
-                const origHref = card.getAttribute('href') || '';
-
-                // КРИТИЧНО: Махаме href, за да не може на 2-рия опит браузърът да отвори страницата /episode/... като на компютър!
-                card.removeAttribute('href');
-                card.style.cursor = 'pointer';
-
                 episodes.push({
                     title: titleEl ? titleEl.innerText.trim() : ('Епизод ' + (eIdx + 1)),
                     img: imgEl ? imgEl.src : '',
-                    href: origHref,
+                    href: card.getAttribute('href'),
                     domElement: card
                 });
             });
@@ -46,7 +40,8 @@
 
     const style = document.createElement('style');
     style.innerHTML = `
-        html, body { overflow: hidden !important; background: #000 !important; margin: 0 !important; padding: 0 !important; }
+        body { overflow: hidden !important; background: #000 !important; margin: 0 !important; }
+        /* Скриваме горната лента на ZenoPlay и излишните елементи */
         header, nav, footer, .site-header, .site-footer, .detail-hero, .recommended-section, .player-toolbar, #player-current-episode {
             display: none !important;
         }
@@ -270,22 +265,7 @@
         }
     }
 
-    // Спира само самото видео (iframe), БЕЗ да изтрива вътрешните елементи на #player-box на ZenoPlay!
-    function stopCurrentVideo() {
-        const iframes = document.querySelectorAll('#player-box iframe');
-        iframes.forEach(ifr => {
-            try { ifr.src = 'about:blank'; } catch (e) {}
-            ifr.remove();
-        });
-    }
-
-    function getBgButtons() {
-        const menu = document.querySelector('.player-picker[data-player-group="bg"] .player-picker-menu');
-        if (!menu) return [];
-        const btns = menu.querySelectorAll('button, a, [role="menuitem"], li');
-        return btns.length > 0 ? Array.from(btns) : Array.from(menu.children);
-    }
-
+    // ОРИГИНАЛНАТА РАБОТЕЩА ФУНКЦИЯ ЗА ПУСКАНЕ НА ЕПИЗОД (която винаги успява на чиста страница)
     function playSelectedEpisode() {
         const season = seasonsData[sIndex];
         const ep = season.episodes[eIndex];
@@ -302,32 +282,24 @@
         loaderMsg.innerText = 'Зареждане на ' + season.title + ' - ' + ep.title + '...';
         loader.style.display = 'flex';
 
-        // 1. Премахваме само стария iframe, запазвайки структурата на #player-box непокътната
-        stopCurrentVideo();
-
-        // 2. Изчистваме класовете за активна карта, за да приеме сайтът клика дори на същия или последен епизод
-        document.querySelectorAll('.episode-card').forEach(c => {
-            c.classList.remove('active', 'is-active', 'current', 'selected');
-        });
-
-        // 3. Кликваме таба на сезона и след това самата карта
-        if (season.tabElement) {
-            season.tabElement.click();
-        }
-
+        if (season.tabElement) season.tabElement.click();
         setTimeout(() => {
-            if (ep.domElement) {
-                ep.domElement.click();
-            }
-        }, 120);
+            if (ep.domElement) ep.domElement.click();
+        }, 150);
 
         let attempts = 0;
-        let triedFallbackBtn = 0;
+        const bgMenu = document.querySelector('.player-picker[data-player-group="bg"] .player-picker-menu');
+        if (bgMenu) delete bgMenu.dataset.autoClicked;
 
         checkTimer = setInterval(() => {
             attempts++;
-            const iframe = document.querySelector('#player-box iframe');
+            const currentBgMenu = document.querySelector('.player-picker[data-player-group="bg"] .player-picker-menu');
+            if (currentBgMenu && currentBgMenu.children.length > 0 && !currentBgMenu.dataset.autoClicked) {
+                currentBgMenu.dataset.autoClicked = 'true';
+                currentBgMenu.children[0].click();
+            }
 
+            const iframe = document.querySelector('#player-box iframe');
             if (iframe && iframe.src && iframe.src.length > 10 && !iframe.src.includes('about:blank')) {
                 clearInterval(checkTimer);
                 checkTimer = null;
@@ -338,25 +310,11 @@
                     if (window.AndroidTV && window.AndroidTV.clickCenterAfterDelay) {
                         window.AndroidTV.clickCenterAfterDelay(2200);
                     }
-                }, 500);
-                return;
-            }
-
-            // Ако до 1.2 сек не се е появил сам iframe, кликваме бутона в BG Players менюто
-            if (attempts === 5 || attempts === 12 || attempts === 20) {
-                const bgBtns = getBgButtons();
-                if (bgBtns.length > 0) {
-                    const btnToClick = bgBtns[triedFallbackBtn % bgBtns.length];
-                    triedFallbackBtn++;
-                    if (btnToClick) btnToClick.click();
-                }
-            }
-
-            if (attempts > 45) {
+                }, 700);
+            } else if (attempts > 40) {
                 clearInterval(checkTimer);
                 checkTimer = null;
-                loader.style.display = 'none';
-                window.tvBack();
+                window.location.replace('https://zenoplay.to/tv-show/novite-sasedi-2007/');
             }
         }, 250);
     }
@@ -385,8 +343,10 @@
         if (zone === 'update') {
             if (dir === 'DOWN') {
                 zone = 'seasons';
-            } else if (dir === 'ENTER' && window.AndroidTV) {
-                window.AndroidTV.checkUpdates();
+            } else if (dir === 'ENTER') {
+                // При натискане на Обнови презареждаме страницата начисто, за да изтегли новия скрипт от GitHub
+                window.location.replace('https://zenoplay.to/tv-show/novite-sasedi-2007/');
+                return;
             }
         } else if (zone === 'seasons') {
             if (dir === 'LEFT' && sIndex > 0) {
@@ -433,12 +393,14 @@
             checkTimer = null;
         }
         if (zone === 'player' || document.body.classList.contains('tv-playing-mode')) {
-            loader.style.display = 'none';
-            document.body.classList.remove('tv-playing-mode');
-            stopCurrentVideo();
-            zone = 'episodes';
-            renderEpisodes();
-            updateFocusVisuals();
+            // КЛЮЧОВ МОМЕНТ: Вместо да чупим DOM-а на сайта при излизане от видеото,
+            // презареждаме главната страница начисто за 0.5 сек!
+            // Така следващият епизод ВИНАГИ се пуска като "1-ви опит" и никога не забива!
+            loaderMsg.innerText = 'Връщане към списъка с епизоди...';
+            loader.style.display = 'flex';
+            const playerBox = document.getElementById('player-box');
+            if (playerBox) playerBox.innerHTML = '';
+            window.location.replace('https://zenoplay.to/tv-show/novite-sasedi-2007/');
             return true;
         }
         if (zone === 'episodes') {
