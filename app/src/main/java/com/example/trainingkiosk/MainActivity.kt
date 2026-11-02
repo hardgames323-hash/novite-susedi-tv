@@ -43,7 +43,7 @@ class MainActivity : ComponentActivity() {
         // Ако качиш JS кода отдолу във файл "tv_ui.js" в публично GitHub репо или Gist,
         // сложи Raw линка тук. При всяко пускане телевизорът ще тегли най-новата версия автоматично!
         // Ако е празно (""), ползва вградения код.
-        private const val REMOTE_SCRIPT_URL = "private const val REMOTE_SCRIPT_URL = https://raw.githubusercontent.com/hardgames323-hash/novite-susedi-tv/refs/heads/main/tv_ui.js"
+        private const val REMOTE_SCRIPT_URL = "https://raw.githubusercontent.com/hardgames323-hash/novite-susedi-tv/refs/heads/main/tv_ui.js"
 
         private const val DESKTOP_USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
