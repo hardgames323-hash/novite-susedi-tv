@@ -1,18 +1,17 @@
 package com.example.trainingkiosk
 
 import android.annotation.SuppressLint
-import android.graphics.Bitmap
 import android.graphics.Color
-import android.net.Uri
-import android.os.Build
 import android.os.Bundle
-import android.os.Message
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
-import android.view.WindowInsets
-import android.view.WindowInsetsController
 import android.view.WindowManager
-import android.webkit.RenderProcessGoneDetail
+import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -22,466 +21,571 @@ import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
-import org.json.JSONObject
 import java.io.ByteArrayInputStream
-
-private const val TARGET_URL = "https://zenoplay.to/tv-show/novite-sasedi-2007/"
-
-/** Стандартен десктоп User-Agent (Windows 10, Chrome), за да се рендира десктоп навигацията със сезоните. */
-private const val DESKTOP_USER_AGENT =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
-        "Chrome/124.0.0.0 Safari/537.36"
-
-/** Рекламни домейни – блокират се заедно с всичките им поддомейни. */
-private val BLOCKED_DOMAINS = hashSetOf(
-    "doubleclick.net",
-    "googlesyndication.com",
-    "popads.net",
-    "exoclick.com",
-    "juicyads.com",
-    "adsterra.com",
-    "acscdn.com",
-    "histats.com",
-    "yandex.ru",
-    "onclickalgo.com",
-    "adtng.com",
-    "cdn4ads.com",
-)
-
-/** Части от URL, които се блокират независимо от домейна. */
-private val BLOCKED_URL_PARTS = listOf("disable-devtool")
-
-/** Основният хост; навигацията в главния прозорец е разрешена само към него и поддомейните му. */
-private val ALLOWED_HOST: String = Uri.parse(TARGET_URL).host.orEmpty().lowercase()
-
-private val BACKGROUND_COLOR = Color.parseColor("#141414")
-
-private const val KIOSK_CSS = """
-header, footer, nav, .site-header, .site-footer, .detail-socials, .mobile-detail-socials, .taxonomy-group, .detail-year-link, .player-provider-group[data-player-group="en"], .tv-show-season-select-wrap, .recommended-section { display: none !important; }
-body, .site-main, .detail-page { background-color: #141414 !important; color: #ffffff !important; }
-button:focus, a:focus, select:focus, .episode-season-tab:focus, .episode-card:focus, .player-picker-button:focus {
-    outline: 4px solid #E50914 !important;
-    outline-offset: 2px !important;
-    transform: scale(1.04) !important;
-    transition: transform 0.15s ease !important;
-    background-color: #2b2b2b !important;
-    z-index: 50 !important;
-}
-.episode-season-tab.active { background-color: #E50914 !important; color: #fff !important; }
-.episode-card.last-watched { border: 3px solid #46d369 !important; }
-#player { margin-top: 10px !important; }
-"""
-
-/**
- * JS за ТВ дистанционно. Слушателите и наблюдателят се закачат веднъж (onPageFinished може да се
- * извика няколко пъти за една страница), а CSS и tabindex се прилагат при всяко извикване.
- */
-private val KIOSK_JS = """
-(function() {
-    try {
-        // --- CSS ---
-        if (!document.getElementById('kiosk-tv-style')) {
-            var style = document.createElement('style');
-            style.id = 'kiosk-tv-style';
-            style.textContent = ${JSONObject.quote(KIOSK_CSS)};
-            (document.head || document.documentElement).appendChild(style);
-        }
-
-        var FOCUSABLE = '.episode-season-tab, .episode-card, .player-picker-button';
-        var BG_MENU = '.player-picker[data-player-group="bg"] .player-picker-menu';
-        var BG_ITEM = 'button, a, [role="option"], [role="menuitem"], li';
-        var BG_ACTIVE = '.active, .selected, [aria-selected="true"], [aria-pressed="true"]';
-
-        // 1. tabindex за навигация със стрелките
-        function makeFocusable() {
-            var nodes = document.querySelectorAll(FOCUSABLE);
-            for (var i = 0; i < nodes.length; i++) {
-                if (!nodes[i].hasAttribute('tabindex')) nodes[i].setAttribute('tabindex', '0');
-            }
-        }
-
-        function cardHref(card) {
-            var href = card.getAttribute('href');
-            if (!href) {
-                var a = card.querySelector('a[href]');
-                if (a) href = a.getAttribute('href');
-            }
-            return href;
-        }
-
-        function markLastWatched(card) {
-            var old = document.querySelectorAll('.episode-card.last-watched');
-            for (var i = 0; i < old.length; i++) old[i].classList.remove('last-watched');
-            card.classList.add('last-watched');
-        }
-
-        // 3. Автоматичен избор на първия BG плеър, щом менюто се напълни
-        function autoPickBgPlayer() {
-            var menu = document.querySelector(BG_MENU);
-            if (!menu || menu.getAttribute('data-kiosk-autopicked') === '1') return;
-            if (menu.querySelector(BG_ACTIVE)) return; // вече има избран активен BG плеър
-            var first = menu.querySelector(BG_ITEM);
-            if (!first) return; // менюто още е празно
-            menu.setAttribute('data-kiosk-autopicked', '1');
-            first.click();
-        }
-
-        // 4. Възстановяване на последно гледания епизод
-        function restoreLastWatched() {
-            var seasonId = localStorage.getItem('lastSeasonId');
-            var episodeHref = localStorage.getItem('lastEpisodeHref');
-            if (!seasonId) return;
-
-            var tab = document.querySelector('.episode-season-tab[data-season-id="' + CSS.escape(seasonId) + '"]');
-            if (tab) tab.click();
-
-            // Даваме време на сайта да покаже епизодите от избрания сезон
-            setTimeout(function() {
-                if (!episodeHref) return;
-                var cards = document.querySelectorAll('.episode-card');
-                for (var i = 0; i < cards.length; i++) {
-                    if (cardHref(cards[i]) === episodeHref) {
-                        markLastWatched(cards[i]);
-                        cards[i].focus();
-                        cards[i].scrollIntoView({ block: 'center' });
-                        break;
-                    }
-                }
-            }, 300);
-        }
-
-        makeFocusable();
-
-        if (!window.__kioskInit) {
-            window.__kioskInit = true;
-
-            // Един наблюдател за целия документ: следи и за нови фокусируеми елементи,
-            // и за появата/напълването на BG менюто (то може да не съществува при зареждане).
-            var pending = false;
-            new MutationObserver(function() {
-                if (pending) return;
-                pending = true;
-                setTimeout(function() {
-                    pending = false;
-                    makeFocusable();
-                    autoPickBgPlayer();
-                }, 100);
-            }).observe(document.documentElement, { childList: true, subtree: true });
-
-            // 2. Запаметяване на избрания епизод + скрол до плеъра
-            document.addEventListener('click', function(e) {
-                var card = e.target.closest ? e.target.closest('.episode-card') : null;
-                if (!card) return;
-
-                var block = card.closest('.season-block');
-                var seasonId = block ? block.getAttribute('data-season-id') : null;
-                var href = cardHref(card);
-
-                if (seasonId) localStorage.setItem('lastSeasonId', seasonId);
-                if (href) localStorage.setItem('lastEpisodeHref', href);
-                markLastWatched(card);
-
-                // Нов епизод → позволяваме нов автоматичен избор на BG плеър
-                var menu = document.querySelector(BG_MENU);
-                if (menu) menu.removeAttribute('data-kiosk-autopicked');
-
-                var player = document.getElementById('player');
-                if (player) player.scrollIntoView({ behavior: 'smooth' });
-            }, true);
-
-            // OK/Enter от дистанционното върху div с tabindex не предизвиква click сам по себе си
-            document.addEventListener('keydown', function(e) {
-                if (e.key !== 'Enter' && e.keyCode !== 13) return;
-                var el = document.activeElement;
-                if (!el || !el.matches || !el.matches(FOCUSABLE)) return;
-                if (el.tagName === 'A' || el.tagName === 'BUTTON') return; // те кликат сами
-                e.preventDefault();
-                el.click();
-            }, true);
-
-            restoreLastWatched();
-            autoPickBgPlayer();
-        }
-    } catch (err) {
-        console.log('Kiosk inject error: ' + err);
-    }
-})();
-""".trimIndent()
-
-/**
- * Скролва до #episodes, ако списъкът не е във видимата част. Връща "scrolled", ако е скролнал,
- * "visible", ако списъкът вече се вижда, и "missing", ако на страницата няма #episodes.
- */
-private val SCROLL_TO_EPISODES_JS = """
-(function() {
-    var el = document.getElementById('episodes');
-    if (!el) return 'missing';
-    var r = el.getBoundingClientRect();
-    if (r.top >= -10 && r.top < window.innerHeight * 0.5) return 'visible';
-    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    var focusTarget = el.querySelector('.episode-card.last-watched') || el.querySelector('.episode-card, .episode-season-tab');
-    if (focusTarget) focusTarget.focus({ preventScroll: true });
-    return 'scrolled';
-})();
-""".trimIndent()
 
 class MainActivity : ComponentActivity() {
 
-    private lateinit var rootLayout: FrameLayout
-    private lateinit var fullscreenContainer: FrameLayout
     private lateinit var webView: WebView
-    private val chromeClient = KioskWebChromeClient()
-
+    private lateinit var fullscreenContainer: FrameLayout
     private var customView: View? = null
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    companion object {
+        private const val TARGET_URL = "https://zenoplay.to/tv-show/novite-sasedi-2007/"
+        private const val DESKTOP_USER_AGENT =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+        private val BLOCKED_KEYWORDS = listOf(
+            "disable-devtool",
+            "doubleclick.net",
+            "googlesyndication.com",
+            "popads.net",
+            "exoclick.com",
+            "juicyads.com",
+            "adsterra.com",
+            "acscdn.com",
+            "histats.com",
+            "yandex.ru",
+            "onclickalgo.com",
+            "adtng.com",
+            "cdn4ads.com",
+            " Simple-Views",
+            "simple-views"
+        )
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        window.decorView.systemUiVisibility = (
+            View.SYSTEM_UI_FLAG_FULLSCREEN
+                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+            )
 
-        val matchParent = FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT
-        )
+        val rootLayout = FrameLayout(this).apply {
+            setBackgroundColor(Color.parseColor("#141414"))
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        }
 
-        rootLayout = FrameLayout(this).apply { setBackgroundColor(BACKGROUND_COLOR) }
         webView = WebView(this).apply {
-            setBackgroundColor(BACKGROUND_COLOR)
+            setBackgroundColor(Color.parseColor("#141414"))
             isFocusable = true
             isFocusableInTouchMode = true
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
         }
-        // Контейнер за видеото на цял екран – стои над WebView и е скрит, докато не потрябва
+
         fullscreenContainer = FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
             visibility = View.GONE
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
         }
-        rootLayout.addView(webView, FrameLayout.LayoutParams(matchParent))
-        rootLayout.addView(fullscreenContainer, FrameLayout.LayoutParams(matchParent))
+
+        rootLayout.addView(webView)
+        rootLayout.addView(fullscreenContainer)
         setContentView(rootLayout)
-        enterImmersiveMode()
 
-        webView.settings.apply {
-            javaScriptEnabled = true
-            domStorageEnabled = true
-            mediaPlaybackRequiresUserGesture = false
-            userAgentString = DESKTOP_USER_AGENT
-            loadWithOverviewMode = true
-            useWideViewPort = true
-            setSupportZoom(false)
-            builtInZoomControls = false
-            displayZoomControls = false
-            mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-            allowFileAccess = false
-            allowContentAccess = false
-            // Popup blocker
-            setSupportMultipleWindows(false)
-            javaScriptCanOpenWindowsAutomatically = false
-        }
+        setupWebView()
+        setupBackNavigation()
 
-        webView.webViewClient = KioskWebViewClient()
-        webView.webChromeClient = chromeClient
-
-        onBackPressedDispatcher.addCallback(this, backCallback)
-
-        if (savedInstanceState != null) {
-            webView.restoreState(savedInstanceState)
-        } else {
-            webView.loadUrl(TARGET_URL)
-        }
+        webView.loadUrl(TARGET_URL)
         webView.requestFocus()
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // WebViewClient: ограничаване на навигацията, AdBlock / Script Blocker, инжектиране на CSS/JS
-    // ---------------------------------------------------------------------------------------------
-
-    private inner class KioskWebViewClient : WebViewClient() {
-
-        override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-            if (!request.isForMainFrame) return false // iframe → видео плеърите се зареждат нормално
-            return !isAllowedMainFrameUrl(request.url)
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun setupWebView() {
+        webView.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            databaseEnabled = true
+            mediaPlaybackRequiresUserGesture = false
+            userAgentString = DESKTOP_USER_AGENT
+            mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            setSupportMultipleWindows(false)
+            javaScriptCanOpenWindowsAutomatically = false
+            loadWithOverviewMode = true
+            useWideViewPort = true
         }
 
-        @Deprecated("Deprecated in Java")
-        override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean =
-            !isAllowedMainFrameUrl(Uri.parse(url))
+        webView.addJavascriptInterface(TvBridge(), "AndroidTV")
 
-        override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
-            if (isBlockedRequest(request.url)) {
-                WebResourceResponse("application/javascript", "utf-8", ByteArrayInputStream(ByteArray(0)))
-            } else {
-                null
+        webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                val url = request.url.toString()
+                if (request.isForMainFrame) {
+                    return !url.contains("zenoplay.to")
+                }
+                return false
             }
 
-        override fun onPageFinished(view: WebView, url: String) {
-            super.onPageFinished(view, url)
-            view.evaluateJavascript(KIOSK_JS, null)
-        }
-
-        override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
-            // Рендер процесът е паднал – пресъздаваме активитито (onDestroy унищожава стария WebView).
-            recreate()
-            return true
-        }
-    }
-
-    /** Главният прозорец може да отиде само на http(s) адрес към основния хост или негов поддомейн. */
-    private fun isAllowedMainFrameUrl(uri: Uri): Boolean {
-        val scheme = uri.scheme?.lowercase()
-        if (scheme != "https" && scheme != "http") return false // intent:, market:, javascript: и др.
-        val host = uri.host?.lowercase() ?: return false
-        return host == ALLOWED_HOST || host.endsWith(".$ALLOWED_HOST")
-    }
-
-    private fun isBlockedRequest(uri: Uri): Boolean {
-        val url = uri.toString().lowercase()
-        if (BLOCKED_URL_PARTS.any { it in url }) return true
-        val host = uri.host ?: return false
-        return isBlockedHost(host)
-    }
-
-    /** Проверява хоста и родителските му домейни: a.b.doubleclick.net → b.doubleclick.net → doubleclick.net. */
-    private fun isBlockedHost(host: String): Boolean {
-        var candidate = host.lowercase()
-        while (true) {
-            if (candidate in BLOCKED_DOMAINS) return true
-            val dot = candidate.indexOf('.')
-            if (dot < 0) return false
-            candidate = candidate.substring(dot + 1)
-        }
-    }
-
-    // ---------------------------------------------------------------------------------------------
-    // WebChromeClient: без popup-и + HTML5 видео на цял екран
-    // ---------------------------------------------------------------------------------------------
-
-    private inner class KioskWebChromeClient : WebChromeClient() {
-
-        override fun onCreateWindow(
-            view: WebView,
-            isDialog: Boolean,
-            isUserGesture: Boolean,
-            resultMsg: Message
-        ): Boolean = false
-
-        override fun onShowCustomView(view: View, callback: CustomViewCallback) {
-            if (customView != null) {
-                callback.onCustomViewHidden()
-                return
+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                val url = request.url.toString().lowercase()
+                if (BLOCKED_KEYWORDS.any { url.contains(it) }) {
+                    return WebResourceResponse(
+                        "application/javascript",
+                        "utf-8",
+                        ByteArrayInputStream(ByteArray(0))
+                    )
+                }
+                return super.shouldInterceptRequest(view, request)
             }
-            customView = view
-            customViewCallback = callback
 
-            fullscreenContainer.addView(
-                view,
-                FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-            )
-            fullscreenContainer.visibility = View.VISIBLE
-            webView.visibility = View.GONE
-
-            view.isFocusable = true
-            view.requestFocus()
-            enterImmersiveMode()
+            override fun onPageFinished(view: WebView, url: String) {
+                super.onPageFinished(view, url)
+                injectCustomTvInterface()
+            }
         }
 
-        override fun onHideCustomView() {
-            val view = customView ?: return
-            fullscreenContainer.removeView(view)
-            fullscreenContainer.visibility = View.GONE
-            customView = null
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onCreateWindow(
+                view: WebView?,
+                isDialog: Boolean,
+                isUserGesture: Boolean,
+                resultMsg: android.os.Message?
+            ): Boolean {
+                return false // Блокира всякакви изскачащи прозорци
+            }
 
-            customViewCallback?.onCustomViewHidden()
-            customViewCallback = null
+            override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+                if (customView != null) {
+                    callback?.onCustomViewHidden()
+                    return
+                }
+                customView = view
+                customViewCallback = callback
+                fullscreenContainer.addView(
+                    view,
+                    FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT
+                    )
+                )
+                fullscreenContainer.visibility = View.VISIBLE
+                webView.visibility = View.GONE
+            }
 
-            webView.visibility = View.VISIBLE
-            webView.requestFocus()
-            enterImmersiveMode()
+            override fun onHideCustomView() {
+                if (customView == null) return
+                fullscreenContainer.removeView(customView)
+                fullscreenContainer.visibility = View.GONE
+                webView.visibility = View.VISIBLE
+                customViewCallback?.onCustomViewHidden()
+                customView = null
+                customViewCallback = null
+            }
         }
-
-        /** Прозрачен постер вместо сивата "play" икона на WebView. */
-        override fun getDefaultVideoPoster(): Bitmap =
-            Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // Бутон Назад на дистанционното
-    // ---------------------------------------------------------------------------------------------
-
-    /**
-     * 1. Видео на цял екран → излиза от цял екран.
-     * 2. Списъкът #episodes не се вижда → скролва до него.
-     * 3. Списъкът вече се вижда (или липсва) → предишна страница, а ако няма такава – затваря приложението.
-     */
-    private val backCallback = object : OnBackPressedCallback(true) {
-        override fun handleOnBackPressed() {
-            if (customView != null) {
-                chromeClient.onHideCustomView()
-                return
-            }
-            webView.evaluateJavascript(SCROLL_TO_EPISODES_JS) { result ->
-                if (result == "\"scrolled\"") return@evaluateJavascript
-                if (webView.canGoBack()) {
-                    webView.goBack()
-                } else {
-                    isEnabled = false
-                    onBackPressedDispatcher.onBackPressed()
-                    isEnabled = true
+    // Прихващаме директно бутоните на ТВ дистанционното и ги пращаме на нашия JS контролер!
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_DPAD_UP -> {
+                    webView.evaluateJavascript("window.tvNav && window.tvNav('UP');", null)
+                    return true
+                }
+                KeyEvent.KEYCODE_DPAD_DOWN -> {
+                    webView.evaluateJavascript("window.tvNav && window.tvNav('DOWN');", null)
+                    return true
+                }
+                KeyEvent.KEYCODE_DPAD_LEFT -> {
+                    webView.evaluateJavascript("window.tvNav && window.tvNav('LEFT');", null)
+                    return true
+                }
+                KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    webView.evaluateJavascript("window.tvNav && window.tvNav('RIGHT');", null)
+                    return true
+                }
+                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                    webView.evaluateJavascript("window.tvNav && window.tvNav('ENTER');", null)
+                    return true
                 }
             }
         }
+        return super.dispatchKeyEvent(event)
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // Цял екран / жизнен цикъл
-    // ---------------------------------------------------------------------------------------------
-
-    @Suppress("DEPRECATION")
-    private fun enterImmersiveMode() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            window.setDecorFitsSystemWindows(false)
-            window.insetsController?.let {
-                it.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
-                it.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+    private fun setupBackNavigation() {
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (customView != null) {
+                    webView.webChromeClient?.onHideCustomView()
+                    return
+                }
+                webView.evaluateJavascript("window.tvBack && window.tvBack();") { result ->
+                    if (result != "true") {
+                        // Ако сме в главното меню, не затваряме веднага случайно
+                    }
+                }
             }
-        } else {
-            window.decorView.systemUiVisibility = (
-                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                    or View.SYSTEM_UI_FLAG_FULLSCREEN
-                    or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                    or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                    or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                    or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                )
+        })
+    }
+
+    private fun simulateCenterClick() {
+        mainHandler.post {
+            val x = webView.width / 2f
+            val y = webView.height / 2f
+            val downTime = SystemClock.uptimeMillis()
+            val downEvent = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, x, y, 0)
+            val upEvent = MotionEvent.obtain(downTime, downTime + 80, MotionEvent.ACTION_UP, x, y, 0)
+            webView.dispatchTouchEvent(downEvent)
+            webView.dispatchTouchEvent(upEvent)
+            downEvent.recycle()
+            upEvent.recycle()
         }
     }
 
-    override fun onWindowFocusChanged(hasFocus: Boolean) {
-        super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) enterImmersiveMode()
+    inner class TvBridge {
+        @JavascriptInterface
+        fun clickCenterAfterDelay(delayMs: Long) {
+            mainHandler.postDelayed({ simulateCenterClick() }, delayMs)
+        }
     }
 
-    override fun onSaveInstanceState(outState: Bundle) {
-        super.onSaveInstanceState(outState)
-        webView.saveState(outState)
-    }
+    private fun injectCustomTvInterface() {
+        val jsCode = """
+        (function() {
+            if (window.tvInterfaceInitialized) return;
+            window.tvInterfaceInitialized = true;
 
-    override fun onResume() {
-        super.onResume()
-        webView.onResume()
-    }
+            // 1. Събираме всички сезони и епизоди от страницата
+            const seasonsData = [];
+            const seasonTabs = document.querySelectorAll('.episode-season-tab');
+            seasonTabs.forEach((tab, sIdx) => {
+                const seasonId = tab.getAttribute('data-season-id');
+                const seasonTitle = tab.innerText.trim();
+                const block = document.getElementById(seasonId);
+                const episodes = [];
+                if (block) {
+                    const cards = block.querySelectorAll('.episode-card');
+                    cards.forEach((card, eIdx) => {
+                        const imgEl = card.querySelector('img');
+                        const titleEl = card.querySelector('strong');
+                        episodes.push({
+                            title: titleEl ? titleEl.innerText.trim() : ('Епизод ' + (eIdx + 1)),
+                            img: imgEl ? imgEl.src : '',
+                            href: card.getAttribute('href'),
+                            domElement: card
+                        });
+                    });
+                }
+                seasonsData.push({
+                    id: seasonId,
+                    title: seasonTitle,
+                    tabElement: tab,
+                    episodes: episodes
+                });
+            });
 
-    override fun onPause() {
-        webView.onPause()
-        super.onPause()
-    }
+            if (seasonsData.length === 0) return;
 
-    override fun onDestroy() {
-        customViewCallback?.onCustomViewHidden()
-        rootLayout.removeAllViews()
-        webView.stopLoading()
-        webView.webChromeClient = null
-        webView.destroy()
-        super.onDestroy()
+            // 2. Създаваме наш собствен Netflix TV интерфейс върху сайта
+            const style = document.createElement('style');
+            style.innerHTML = `
+                body { overflow: hidden !important; background: #141414 !important; margin: 0 !important; }
+                #tv-custom-overlay {
+                    position: fixed; inset: 0; z-index: 999990;
+                    background: linear-gradient(180deg, #1a1a1a 0%, #101010 100%);
+                    color: #fff; font-family: sans-serif;
+                    display: flex; flex-direction: column;
+                    padding: 28px 40px; box-sizing: border-box;
+                    user-select: none;
+                }
+                #tv-header {
+                    display: flex; align-items: center; justify-content: space-between;
+                    margin-bottom: 18px;
+                }
+                #tv-header h1 {
+                    margin: 0; font-size: 34px; color: #E50914; font-weight: 800; letter-spacing: 0.5px;
+                }
+                #tv-status {
+                    font-size: 18px; color: #aaa;
+                }
+                #tv-seasons-row {
+                    display: flex; gap: 12px; overflow-x: auto; padding: 10px 4px;
+                    scrollbar-width: none; flex-shrink: 0; margin-bottom: 20px;
+                }
+                #tv-seasons-row::-webkit-scrollbar { display: none; }
+                .tv-season-btn {
+                    padding: 12px 24px; border-radius: 8px; background: #262626;
+                    color: #ddd; font-size: 20px; font-weight: bold; white-space: nowrap;
+                    border: 3px solid transparent; transition: all 0.15s ease;
+                }
+                .tv-season-btn.active-season {
+                    background: #383838; color: #fff; border-color: #555;
+                }
+                .tv-season-btn.tv-focused {
+                    background: #E50914 !important; color: #fff !important;
+                    border-color: #fff !important; transform: scale(1.08);
+                    box-shadow: 0 0 20px rgba(229, 9, 20, 0.7);
+                }
+                #tv-episodes-grid {
+                    display: grid; grid-template-columns: repeat(4, 1fr);
+                    gap: 20px; overflow-y: auto; padding: 10px 6px 60px 6px;
+                    flex: 1; scrollbar-width: none;
+                }
+                #tv-episodes-grid::-webkit-scrollbar { display: none; }
+                .tv-ep-card {
+                    background: #222; border-radius: 10px; overflow: hidden;
+                    border: 4px solid transparent; transition: all 0.15s ease;
+                    display: flex; flex-direction: column; position: relative;
+                    height: 185px;
+                }
+                .tv-ep-card img {
+                    width: 100%; height: 130px; object-fit: cover; background: #111;
+                }
+                .tv-ep-title {
+                    padding: 10px 14px; font-size: 20px; font-weight: bold; color: #eee;
+                    display: flex; justify-content: space-between; align-items: center;
+                }
+                .tv-ep-card.watched-ep {
+                    border-color: #46d369;
+                }
+                .tv-ep-card.watched-ep .tv-ep-title::after {
+                    content: 'ПОСЛЕДЕН'; font-size: 12px; background: #46d369;
+                    color: #000; padding: 3px 7px; border-radius: 4px; font-weight: 900;
+                }
+                .tv-ep-card.tv-focused {
+                    border-color: #E50914 !important; background: #333 !important;
+                    transform: scale(1.06); z-index: 10;
+                    box-shadow: 0 8px 25px rgba(229, 9, 20, 0.65);
+                }
+                #tv-loader {
+                    position: fixed; inset: 0; z-index: 999995;
+                    background: rgba(0,0,0,0.92); color: #fff;
+                    display: none; flex-direction: column;
+                    align-items: center; justify-content: center;
+                    font-size: 28px; font-weight: bold;
+                }
+                /* Когато сме в режим на гледане, правим iframe на 100% цял екран */
+                body.tv-playing-mode #tv-custom-overlay { display: none !important; }
+                body.tv-playing-mode #player-box iframe {
+                    position: fixed !important; top: 0 !important; left: 0 !important;
+                    width: 100vw !important; height: 100vh !important;
+                    z-index: 9999999 !important; border: none !important;
+                    background: #000 !important;
+                }
+            `;
+            document.head.appendChild(style);
+
+            const overlay = document.createElement('div');
+            overlay.id = 'tv-custom-overlay';
+            overlay.innerHTML = `
+                <div id="tv-header">
+                    <h1>НОВИТЕ СЪСЕДИ</h1>
+                    <div id="tv-status">Избери със стрелките и натисни ОК (Назад = Списък със сезони)</div>
+                </div>
+                <div id="tv-seasons-row"></div>
+                <div id="tv-episodes-grid"></div>
+            `;
+            document.body.appendChild(overlay);
+
+            const loader = document.createElement('div');
+            loader.id = 'tv-loader';
+            loader.innerHTML = '<div>Зареждане на епизода с БГ Аудио...</div>';
+            document.body.appendChild(loader);
+
+            // 3. Състояние за навигация с дистанционното
+            let zone = 'episodes'; // 'seasons' или 'episodes' или 'player'
+            let sIndex = parseInt(localStorage.getItem('tv_last_season') || '0', 10);
+            if (sIndex >= seasonsData.length || sIndex < 0) sIndex = 0;
+            let eIndex = parseInt(localStorage.getItem('tv_last_ep') || '0', 10);
+            let watchedSeason = sIndex;
+            let watchedEp = eIndex;
+
+            const seasonsRow = document.getElementById('tv-seasons-row');
+            const episodesGrid = document.getElementById('tv-episodes-grid');
+
+            function renderSeasons() {
+                seasonsRow.innerHTML = '';
+                seasonsData.forEach((s, idx) => {
+                    const btn = document.createElement('div');
+                    btn.className = 'tv-season-btn' + (idx === sIndex ? ' active-season' : '');
+                    if (zone === 'seasons' && idx === sIndex) btn.className += ' tv-focused';
+                    btn.innerText = s.title;
+                    seasonsRow.appendChild(btn);
+                });
+            }
+
+            function renderEpisodes() {
+                episodesGrid.innerHTML = '';
+                const eps = seasonsData[sIndex].episodes;
+                if (eIndex >= eps.length) eIndex = 0;
+                eps.forEach((ep, idx) => {
+                    const card = document.createElement('div');
+                    let cls = 'tv-ep-card';
+                    if (sIndex === watchedSeason && idx === watchedEp) cls += ' watched-ep';
+                    if (zone === 'episodes' && idx === eIndex) cls += ' tv-focused';
+                    card.className = cls;
+                    card.innerHTML = `
+                        <img src="${'$'}{ep.img}" alt="">
+                        <div class="tv-ep-title"><span>▶ ${'$'}{ep.title}</span></div>
+                    `;
+                    episodesGrid.appendChild(card);
+                });
+            }
+
+            function updateFocusVisuals() {
+                const sBtns = seasonsRow.querySelectorAll('.tv-season-btn');
+                sBtns.forEach((b, idx) => {
+                    b.classList.toggle('active-season', idx === sIndex);
+                    b.classList.toggle('tv-focused', zone === 'seasons' && idx === sIndex);
+                    if (zone === 'seasons' && idx === sIndex) {
+                        b.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+                    }
+                });
+
+                const eCards = episodesGrid.querySelectorAll('.tv-ep-card');
+                eCards.forEach((c, idx) => {
+                    c.classList.toggle('tv-focused', zone === 'episodes' && idx === eIndex);
+                    if (zone === 'episodes' && idx === eIndex) {
+                        c.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    }
+                });
+            }
+
+            function playSelectedEpisode() {
+                const season = seasonsData[sIndex];
+                const ep = season.episodes[eIndex];
+                if (!ep) return;
+
+                watchedSeason = sIndex;
+                watchedEp = eIndex;
+                localStorage.setItem('tv_last_season', String(sIndex));
+                localStorage.setItem('tv_last_ep', String(eIndex));
+
+                zone = 'player';
+                loader.style.display = 'flex';
+
+                // Изчистваме стар iframe ако има
+                const playerBox = document.getElementById('player-box');
+                if (playerBox) playerBox.innerHTML = '';
+
+                // Кликваме оригиналния таб на сезона и оригиналната карта на епизода
+                if (season.tabElement) season.tabElement.click();
+                setTimeout(() => {
+                    if (ep.domElement) ep.domElement.click();
+                }, 150);
+
+                // Следим кога ще се заредят BG Players и видеото
+                let attempts = 0;
+                const checkTimer = setInterval(() => {
+                    attempts++;
+                    const bgMenu = document.querySelector('.player-picker[data-player-group="bg"] .player-picker-menu');
+                    if (bgMenu && bgMenu.children.length > 0 && !bgMenu.dataset.autoClicked) {
+                        bgMenu.dataset.autoClicked = 'true';
+                        bgMenu.children[0].click();
+                    }
+
+                    const iframe = document.querySelector('#player-box iframe');
+                    if (iframe && iframe.src && iframe.src.length > 10) {
+                        clearInterval(checkTimer);
+                        if (bgMenu) delete bgMenu.dataset.autoClicked;
+                        setTimeout(() => {
+                            loader.style.display = 'none';
+                            document.body.classList.add('tv-playing-mode');
+                            // Симулираме клик в центъра след 2.2 сек, за да стартира видеото само!
+                            if (window.AndroidTV && window.AndroidTV.clickCenterAfterDelay) {
+                                window.AndroidTV.clickCenterAfterDelay(2200);
+                            }
+                        }, 700);
+                    } else if (attempts > 40) {
+                        clearInterval(checkTimer);
+                        loader.style.display = 'none';
+                        document.body.classList.add('tv-playing-mode');
+                    }
+                }, 250);
+            }
+
+            // 4. Глобална функция, управлявана директно от хардуерните бутони на Android TV дистанционното
+            window.tvNav = function(dir) {
+                if (zone === 'player') {
+                    // Ако сме във видеото и натисне ОК, симулираме клик в центъра (Play/Pause)
+                    if (dir === 'ENTER' && window.AndroidTV) {
+                        window.AndroidTV.clickCenterAfterDelay(50);
+                    }
+                    return;
+                }
+
+                const epsCount = seasonsData[sIndex].episodes.length;
+                const cols = 4;
+
+                if (zone === 'seasons') {
+                    if (dir === 'LEFT' && sIndex > 0) {
+                        sIndex--;
+                        eIndex = 0;
+                        renderEpisodes();
+                    } else if (dir === 'RIGHT' && sIndex < seasonsData.length - 1) {
+                        sIndex++;
+                        eIndex = 0;
+                        renderEpisodes();
+                    } else if (dir === 'DOWN' || dir === 'ENTER') {
+                        zone = 'episodes';
+                    }
+                } else if (zone === 'episodes') {
+                    if (dir === 'LEFT') {
+                        if (eIndex > 0) eIndex--;
+                    } else if (dir === 'RIGHT') {
+                        if (eIndex < epsCount - 1) eIndex++;
+                    } else if (dir === 'UP') {
+                        if (eIndex >= cols) {
+                            eIndex -= cols;
+                        } else {
+                            zone = 'seasons';
+                        }
+                    } else if (dir === 'DOWN') {
+                        if (eIndex + cols < epsCount) {
+                            eIndex += cols;
+                        } else {
+                            eIndex = epsCount - 1;
+                        }
+                    } else if (dir === 'ENTER') {
+                        playSelectedEpisode();
+                        return;
+                    }
+                }
+                updateFocusVisuals();
+            };
+
+            // 5. Функция за бутона Назад (Back) на дистанционното
+            window.tvBack = function() {
+                if (zone === 'player' || document.body.classList.contains('tv-playing-mode')) {
+                    loader.style.display = 'none';
+                    document.body.classList.remove('tv-playing-mode');
+                    const playerBox = document.getElementById('player-box');
+                    if (playerBox) playerBox.innerHTML = ''; // Спира звука и видеото веднага
+                    zone = 'episodes';
+                    renderSeasons();
+                    renderEpisodes();
+                    updateFocusVisuals();
+                    return true;
+                }
+                if (zone === 'episodes') {
+                    zone = 'seasons';
+                    updateFocusVisuals();
+                    return true;
+                }
+                return false;
+            };
+
+            renderSeasons();
+            renderEpisodes();
+            updateFocusVisuals();
+        })();
+        """.trimIndent()
+
+        webView.evaluateJavascript(jsCode, null)
     }
 }
