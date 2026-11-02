@@ -195,7 +195,7 @@
                 });
             }
 
-            function renderEpisodes() {
+                function renderEpisodes() {
                 episodesGrid.innerHTML = '';
                 const eps = seasonsData[sIndex].episodes;
                 if (eIndex >= eps.length) eIndex = 0;
@@ -205,10 +205,8 @@
                     if (sIndex === watchedSeason && idx === watchedEp) cls += ' watched-ep';
                     if (zone === 'episodes' && idx === eIndex) cls += ' tv-focused';
                     card.className = cls;
-                    card.innerHTML = `
-                        <img src="${'$'}{ep.img}" alt="">
-                        <div class="tv-ep-title"><span>▶ ${'$'}{ep.title}</span></div>
-                    `;
+                    card.innerHTML = '<img src="' + ep.img + '" alt="">' +
+                        '<div class="tv-ep-title"><span>▶ ' + ep.title + '</span></div>';
                     episodesGrid.appendChild(card);
                 });
             }
