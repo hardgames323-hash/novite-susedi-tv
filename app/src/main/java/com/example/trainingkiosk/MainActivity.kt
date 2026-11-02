@@ -11,6 +11,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -19,9 +20,13 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import java.io.ByteArrayInputStream
+import java.net.HttpURLConnection
+import java.net.URL
+import kotlin.concurrent.thread
 
 class MainActivity : ComponentActivity() {
 
@@ -33,6 +38,13 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val TARGET_URL = "https://zenoplay.to/tv-show/novite-sasedi-2007/"
+
+        // ОПЦИЯ ЗА АВТОМАТИЧНИ ЪПДЕЙТИ (OTA):
+        // Ако качиш JS кода отдолу във файл "tv_ui.js" в публично GitHub репо или Gist,
+        // сложи Raw линка тук. При всяко пускане телевизорът ще тегли най-новата версия автоматично!
+        // Ако е празно (""), ползва вградения код.
+        private const val REMOTE_SCRIPT_URL = "private const val REMOTE_SCRIPT_URL = "https://raw.githubusercontent.com/hardgames323-hash/novite-susedi-tv/refs/heads/main/tv_ui.js""
+
         private const val DESKTOP_USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
@@ -66,7 +78,7 @@ class MainActivity : ComponentActivity() {
             )
 
         val rootLayout = FrameLayout(this).apply {
-            setBackgroundColor(Color.parseColor("#141414"))
+            setBackgroundColor(Color.BLACK)
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -74,7 +86,7 @@ class MainActivity : ComponentActivity() {
         }
 
         webView = WebView(this).apply {
-            setBackgroundColor(Color.parseColor("#141414"))
+            setBackgroundColor(Color.BLACK)
             isFocusable = true
             isFocusableInTouchMode = true
             layoutParams = FrameLayout.LayoutParams(
@@ -105,6 +117,9 @@ class MainActivity : ComponentActivity() {
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun setupWebView() {
+        CookieManager.getInstance().setAcceptCookie(true)
+        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
+
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -143,7 +158,9 @@ class MainActivity : ComponentActivity() {
 
             override fun onPageFinished(view: WebView, url: String) {
                 super.onPageFinished(view, url)
-                injectCustomTvInterface()
+                if (url.contains("zenoplay.to")) {
+                    loadAndInjectTvInterface()
+                }
             }
         }
 
@@ -153,9 +170,7 @@ class MainActivity : ComponentActivity() {
                 isDialog: Boolean,
                 isUserGesture: Boolean,
                 resultMsg: android.os.Message?
-            ): Boolean {
-                return false
-            }
+            ): Boolean = false
 
             override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
                 if (customView != null) {
@@ -198,15 +213,15 @@ class MainActivity : ComponentActivity() {
                     webView.evaluateJavascript("window.tvNav && window.tvNav('DOWN');", null)
                     return true
                 }
-                KeyEvent.KEYCODE_DPAD_LEFT -> {
+                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_MEDIA_REWIND -> {
                     webView.evaluateJavascript("window.tvNav && window.tvNav('LEFT');", null)
                     return true
                 }
-                KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
                     webView.evaluateJavascript("window.tvNav && window.tvNav('RIGHT');", null)
                     return true
                 }
-                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
                     webView.evaluateJavascript("window.tvNav && window.tvNav('ENTER');", null)
                     return true
                 }
@@ -227,13 +242,11 @@ class MainActivity : ComponentActivity() {
         })
     }
 
-    private fun simulateCenterClick() {
+    private fun simulateTouch(x: Float, y: Float) {
         mainHandler.post {
-            val x = webView.width / 2f
-            val y = webView.height / 2f
             val downTime = SystemClock.uptimeMillis()
             val downEvent = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, x, y, 0)
-            val upEvent = MotionEvent.obtain(downTime, downTime + 80, MotionEvent.ACTION_UP, x, y, 0)
+            val upEvent = MotionEvent.obtain(downTime, downTime + 70, MotionEvent.ACTION_UP, x, y, 0)
             webView.dispatchTouchEvent(downEvent)
             webView.dispatchTouchEvent(upEvent)
             downEvent.recycle()
@@ -241,14 +254,83 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    inner class TvBridge {
-        @JavascriptInterface
-        fun clickCenterAfterDelay(delayMs: Long) {
-            mainHandler.postDelayed({ simulateCenterClick() }, delayMs)
+    // Изпраща клавишно събитие (стрелка наляво/надясно или Space) директно към фокусирания видео плеър (iframe)
+    private fun sendNativeKeyToWebView(keyCode: Int) {
+        mainHandler.post {
+            val now = SystemClock.uptimeMillis()
+            webView.dispatchKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0))
+            webView.dispatchKeyEvent(KeyEvent(now, now + 40, KeyEvent.ACTION_UP, keyCode, 0))
         }
     }
 
-    private fun injectCustomTvInterface() {
+    inner class TvBridge {
+        @JavascriptInterface
+        fun clickCenterAfterDelay(delayMs: Long) {
+            mainHandler.postDelayed({
+                simulateTouch(webView.width / 2f, webView.height / 2f)
+            }, delayMs)
+        }
+
+        @JavascriptInterface
+        fun seekVideo(direction: String) {
+            // 1. Първо фокусираме центъра (ако още не е фокусиран iframe-ът) и пращаме нативен клавиш Left/Right към плеъра (JWPlayer / VideoJS разбират стрелките)
+            mainHandler.post {
+                val key = if (direction == "LEFT") KeyEvent.KEYCODE_DPAD_LEFT else KeyEvent.KEYCODE_DPAD_RIGHT
+                sendNativeKeyToWebView(key)
+            }
+        }
+
+        @JavascriptInterface
+        fun togglePlayPause() {
+            mainHandler.post {
+                simulateTouch(webView.width / 2f, webView.height / 2f)
+            }
+        }
+
+        @JavascriptInterface
+        fun checkUpdates() {
+            if (REMOTE_SCRIPT_URL.isBlank()) {
+                mainHandler.post {
+                    Toast.makeText(this@MainActivity, "Вече сте с най-новата вградена версия!", Toast.LENGTH_SHORT).show()
+                }
+                return
+            }
+            mainHandler.post {
+                Toast.makeText(this@MainActivity, "Проверка за обновления...", Toast.LENGTH_SHORT).show()
+            }
+            loadAndInjectTvInterface(forceReload = true)
+        }
+    }
+
+    private fun loadAndInjectTvInterface(forceReload: Boolean = false) {
+        if (REMOTE_SCRIPT_URL.isNotBlank()) {
+            thread {
+                try {
+                    val conn = URL("$REMOTE_SCRIPT_URL?t=${System.currentTimeMillis()}").openConnection() as HttpURLConnection
+                    conn.connectTimeout = 4000
+                    conn.readTimeout = 4000
+                    val remoteJs = conn.inputStream.bufferedReader().use { it.readText() }
+                    if (remoteJs.isNotBlank()) {
+                        mainHandler.post {
+                            if (forceReload) {
+                                webView.evaluateJavascript("window.tvInterfaceInitialized = false; document.getElementById('tv-custom-overlay')?.remove();", null)
+                                Toast.makeText(this, "Интерфейсът е обновен успешно!", Toast.LENGTH_SHORT).show()
+                            }
+                            webView.evaluateJavascript(remoteJs, null)
+                        }
+                        return@thread
+                    }
+                } catch (_: Exception) {
+                    // Ако няма връзка с GitHub, падаме автоматично към вградения скрипт
+                }
+                mainHandler.post { injectBuiltInTvInterface() }
+            }
+        } else {
+            injectBuiltInTvInterface()
+        }
+    }
+
+    private fun injectBuiltInTvInterface() {
         val jsCode = """
         (function() {
             if (window.tvInterfaceInitialized) return;
@@ -287,7 +369,6 @@ class MainActivity : ComponentActivity() {
             const style = document.createElement('style');
             style.innerHTML = `
                 body { overflow: hidden !important; background: #000 !important; margin: 0 !important; }
-                /* Скриваме горната лента на ZenoPlay и фона, за да не се виждат над видеото */
                 header, nav, footer, .site-header, .detail-hero, .recommended-section, .player-toolbar, #player-current-episode {
                     display: none !important;
                 }
@@ -306,8 +387,18 @@ class MainActivity : ComponentActivity() {
                 #tv-header h1 {
                     margin: 0; font-size: 34px; color: #E50914; font-weight: 800; letter-spacing: 0.5px;
                 }
+                #tv-header-right {
+                    display: flex; align-items: center; gap: 16px;
+                }
                 #tv-status {
-                    font-size: 18px; color: #aaa;
+                    font-size: 17px; color: #aaa;
+                }
+                #tv-update-btn {
+                    padding: 8px 16px; border-radius: 6px; background: #2b2b2b;
+                    color: #ccc; font-size: 16px; font-weight: bold; border: 2px solid transparent;
+                }
+                #tv-update-btn.tv-focused {
+                    background: #E50914 !important; color: #fff !important; border-color: #fff !important;
                 }
                 #tv-seasons-row {
                     display: flex; gap: 12px; overflow-x: auto; padding: 10px 4px;
@@ -365,6 +456,12 @@ class MainActivity : ComponentActivity() {
                     align-items: center; justify-content: center;
                     font-size: 28px; font-weight: bold;
                 }
+                #tv-osd {
+                    position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%);
+                    z-index: 99999999; background: rgba(0,0,0,0.85); color: #fff;
+                    padding: 12px 28px; border-radius: 30px; border: 2px solid #E50914;
+                    font-size: 22px; font-weight: bold; display: none; pointer-events: none;
+                }
                 body.tv-playing-mode #tv-custom-overlay { display: none !important; }
                 body.tv-playing-mode #episodes { display: none !important; }
                 body.tv-playing-mode #player-box iframe {
@@ -381,7 +478,10 @@ class MainActivity : ComponentActivity() {
             overlay.innerHTML = `
                 <div id="tv-header">
                     <h1>НОВИТЕ СЪСЕДИ</h1>
-                    <div id="tv-status">Избери със стрелките и натисни ОК (Назад = Списък със сезони)</div>
+                    <div id="tv-header-right">
+                        <div id="tv-status">ОК = Пусни | Назад = Списък със сезони</div>
+                        <div id="tv-update-btn">⟳ Обнови</div>
+                    </div>
                 </div>
                 <div id="tv-seasons-row"></div>
                 <div id="tv-episodes-grid"></div>
@@ -390,10 +490,22 @@ class MainActivity : ComponentActivity() {
 
             const loader = document.createElement('div');
             loader.id = 'tv-loader';
-            loader.innerHTML = '<div>Зареждане на епизода...</div>';
+            loader.innerHTML = '<div id="tv-loader-msg">Зареждане на епизода...</div>';
             document.body.appendChild(loader);
 
-            let zone = 'episodes';
+            const osd = document.createElement('div');
+            osd.id = 'tv-osd';
+            document.body.appendChild(osd);
+
+            let osdTimer = null;
+            function showOsd(text) {
+                osd.innerText = text;
+                osd.style.display = 'block';
+                if (osdTimer) clearTimeout(osdTimer);
+                osdTimer = setTimeout(() => { osd.style.display = 'none'; }, 1800);
+            }
+
+            let zone = 'episodes'; // 'update', 'seasons', 'episodes', 'player'
             let sIndex = parseInt(localStorage.getItem('tv_last_season') || '0', 10);
             if (sIndex >= seasonsData.length || sIndex < 0) sIndex = 0;
             let eIndex = parseInt(localStorage.getItem('tv_last_ep') || '0', 10);
@@ -403,6 +515,8 @@ class MainActivity : ComponentActivity() {
 
             const seasonsRow = document.getElementById('tv-seasons-row');
             const episodesGrid = document.getElementById('tv-episodes-grid');
+            const updateBtn = document.getElementById('tv-update-btn');
+            const loaderMsg = document.getElementById('tv-loader-msg');
 
             function renderSeasons() {
                 seasonsRow.innerHTML = '';
@@ -434,6 +548,8 @@ class MainActivity : ComponentActivity() {
             }
 
             function updateFocusVisuals() {
+                updateBtn.classList.toggle('tv-focused', zone === 'update');
+
                 const sBtns = seasonsRow.querySelectorAll('.tv-season-btn');
                 sBtns.forEach((b, idx) => {
                     b.classList.toggle('active-season', idx === sIndex);
@@ -452,6 +568,14 @@ class MainActivity : ComponentActivity() {
                 });
             }
 
+            // Помощна функция: намира всички истински бутони за сървъри в BG менюто
+            function getBgButtons() {
+                const menu = document.querySelector('.player-picker[data-player-group="bg"] .player-picker-menu');
+                if (!menu) return [];
+                const btns = menu.querySelectorAll('button, a, [role="menuitem"], li');
+                return btns.length > 0 ? Array.from(btns) : Array.from(menu.children);
+            }
+
             function playSelectedEpisode() {
                 const season = seasonsData[sIndex];
                 const ep = season.episodes[eIndex];
@@ -465,50 +589,60 @@ class MainActivity : ComponentActivity() {
                 localStorage.setItem('tv_last_ep', String(eIndex));
 
                 zone = 'player';
+                loaderMsg.innerText = 'Зареждане на ' + season.title + ' - ' + ep.title + '...';
                 loader.style.display = 'flex';
 
                 const playerBox = document.getElementById('player-box');
                 if (playerBox) playerBox.innerHTML = '';
 
-                // ВАЖНО за последния епизод: ако сайтът вече е маркирал тази карта като активна,
-                // повторният клик се игнорира от ZenoPlay! Затова първо махаме класа active/selected
-                // или кликваме за миг друга карта от същия сезон, преди да кликнем желаната!
-                const allCards = season.episodes;
-                if (allCards.length > 1) {
-                    const dummyIdx = (eIndex === 0) ? 1 : 0;
-                    if (allCards[dummyIdx] && allCards[dummyIdx].domElement) {
-                        allCards[dummyIdx].domElement.click();
-                    }
-                }
+                // Махаме класа active/current от всички карти, за да не игнорира ZenoPlay клика върху текущо избрана карта!
+                document.querySelectorAll('.episode-card').forEach(c => {
+                    c.classList.remove('active', 'is-active', 'current', 'selected');
+                });
 
+                // 1. Активираме таба на сезона
                 if (season.tabElement) season.tabElement.click();
+
+                // 2. Кликваме директно желания епизод
                 setTimeout(() => {
                     if (ep.domElement) ep.domElement.click();
-                }, 180);
+                }, 150);
 
                 let attempts = 0;
-                let clickedBg = false;
+                let triedFallbackBtn = 0;
+
                 checkTimer = setInterval(() => {
                     attempts++;
-                    const bgMenu = document.querySelector('.player-picker[data-player-group="bg"] .player-picker-menu');
-                    // Изчакваме поне 2 такта след клика върху епизода, за да сме сигурни, че менюто е обновено
-                    if (attempts >= 2 && bgMenu && bgMenu.children.length > 0 && !clickedBg) {
-                        clickedBg = true;
-                        bgMenu.children[0].click();
-                    }
-
                     const iframe = document.querySelector('#player-box iframe');
-                    if (iframe && iframe.src && iframe.src.length > 10) {
+
+                    // АКО сайтът вече сам е заредил iframe (което прави по подразбиране за повечето епизоди),
+                    // НЕ пипаме bgMenu, за да не го разкачим!
+                    if (iframe && iframe.src && iframe.src.length > 10 && !iframe.src.includes('about:blank')) {
                         clearInterval(checkTimer);
                         checkTimer = null;
                         setTimeout(() => {
                             loader.style.display = 'none';
                             document.body.classList.add('tv-playing-mode');
+                            iframe.focus();
+                            // Симулираме клик в центъра след 2.2 сек, за да стартира видеото И да получи фокус за превъртане
                             if (window.AndroidTV && window.AndroidTV.clickCenterAfterDelay) {
                                 window.AndroidTV.clickCenterAfterDelay(2200);
                             }
-                        }, 700);
-                    } else if (attempts > 40) {
+                        }, 600);
+                        return;
+                    }
+
+                    // АКО до 1.5 сек (attempts == 6) сайтът НЕ е пуснал сам iframe, чак тогава кликваме първия BG бутон!
+                    if (attempts === 6 || attempts === 14 || attempts === 22) {
+                        const bgBtns = getBgButtons();
+                        if (bgBtns.length > 0) {
+                            const btnToClick = bgBtns[triedFallbackBtn % bgBtns.length];
+                            triedFallbackBtn++;
+                            if (btnToClick) btnToClick.click();
+                        }
+                    }
+
+                    if (attempts > 45) {
                         clearInterval(checkTimer);
                         checkTimer = null;
                         loader.style.display = 'none';
@@ -519,8 +653,18 @@ class MainActivity : ComponentActivity() {
 
             window.tvNav = function(dir) {
                 if (zone === 'player') {
+                    const iframe = document.querySelector('#player-box iframe');
+                    if (iframe) iframe.focus();
+
                     if (dir === 'ENTER' && window.AndroidTV) {
-                        window.AndroidTV.clickCenterAfterDelay(50);
+                        showOsd('⏯ Пусни / Пауза');
+                        window.AndroidTV.togglePlayPause();
+                    } else if (dir === 'LEFT' && window.AndroidTV) {
+                        showOsd('⏪ Назад');
+                        window.AndroidTV.seekVideo('LEFT');
+                    } else if (dir === 'RIGHT' && window.AndroidTV) {
+                        showOsd('⏩ Напред');
+                        window.AndroidTV.seekVideo('RIGHT');
                     }
                     return;
                 }
@@ -528,7 +672,13 @@ class MainActivity : ComponentActivity() {
                 const epsCount = seasonsData[sIndex].episodes.length;
                 const cols = 4;
 
-                if (zone === 'seasons') {
+                if (zone === 'update') {
+                    if (dir === 'DOWN') {
+                        zone = 'seasons';
+                    } else if (dir === 'ENTER' && window.AndroidTV) {
+                        window.AndroidTV.checkUpdates();
+                    }
+                } else if (zone === 'seasons') {
                     if (dir === 'LEFT' && sIndex > 0) {
                         sIndex--;
                         eIndex = 0;
@@ -537,6 +687,8 @@ class MainActivity : ComponentActivity() {
                         sIndex++;
                         eIndex = 0;
                         renderEpisodes();
+                    } else if (dir === 'UP') {
+                        zone = 'update';
                     } else if (dir === 'DOWN' || dir === 'ENTER') {
                         zone = 'episodes';
                     }
