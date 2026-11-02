@@ -1,4 +1,10 @@
 (function() {
+    // Ако случайно страницата се е презаредила на /episode/, веднага я връщаме към главната!
+    if (window.location.pathname.indexOf('/episode/') !== -1) {
+        window.location.replace('https://zenoplay.to/tv-show/novite-sasedi-2007/');
+        return;
+    }
+
     if (window.tvInterfaceInitialized) return;
     window.tvInterfaceInitialized = true;
 
@@ -14,10 +20,16 @@
             cards.forEach((card, eIdx) => {
                 const imgEl = card.querySelector('img');
                 const titleEl = card.querySelector('strong');
+                const origHref = card.getAttribute('href') || '';
+
+                // КРИТИЧНО: Махаме href, за да не може на 2-рия опит браузърът да отвори страницата /episode/... като на компютър!
+                card.removeAttribute('href');
+                card.style.cursor = 'pointer';
+
                 episodes.push({
                     title: titleEl ? titleEl.innerText.trim() : ('Епизод ' + (eIdx + 1)),
                     img: imgEl ? imgEl.src : '',
-                    href: card.getAttribute('href'),
+                    href: origHref,
                     domElement: card
                 });
             });
@@ -34,8 +46,8 @@
 
     const style = document.createElement('style');
     style.innerHTML = `
-        body { overflow: hidden !important; background: #000 !important; margin: 0 !important; }
-        header, nav, footer, .site-header, .detail-hero, .recommended-section, .player-toolbar, #player-current-episode {
+        html, body { overflow: hidden !important; background: #000 !important; margin: 0 !important; padding: 0 !important; }
+        header, nav, footer, .site-header, .site-footer, .detail-hero, .recommended-section, .player-toolbar, #player-current-episode {
             display: none !important;
         }
         #tv-custom-overlay {
@@ -223,7 +235,6 @@
         episodesGrid.appendChild(frag);
     }
 
-    // Оптимизирана функция без цикли и без плавни анимации (0 лаг на слаби телевизори)
     function updateFocusVisuals() {
         if (prevFocusedEl) {
             prevFocusedEl.classList.remove('tv-focused');
@@ -259,17 +270,20 @@
         }
     }
 
+    // Спира само самото видео (iframe), БЕЗ да изтрива вътрешните елементи на #player-box на ZenoPlay!
+    function stopCurrentVideo() {
+        const iframes = document.querySelectorAll('#player-box iframe');
+        iframes.forEach(ifr => {
+            try { ifr.src = 'about:blank'; } catch (e) {}
+            ifr.remove();
+        });
+    }
+
     function getBgButtons() {
         const menu = document.querySelector('.player-picker[data-player-group="bg"] .player-picker-menu');
         if (!menu) return [];
         const btns = menu.querySelectorAll('button, a, [role="menuitem"], li');
         return btns.length > 0 ? Array.from(btns) : Array.from(menu.children);
-    }
-
-    function triggerRealClick(el) {
-        if (!el) return;
-        el.click();
-        el.dispatchEvent(new MouseEvent('click', { view: window, bubbles: true, cancelable: true }));
     }
 
     function playSelectedEpisode() {
@@ -288,36 +302,24 @@
         loaderMsg.innerText = 'Зареждане на ' + season.title + ' - ' + ep.title + '...';
         loader.style.display = 'flex';
 
-        const playerBox = document.getElementById('player-box');
-        if (playerBox) playerBox.innerHTML = '';
+        // 1. Премахваме само стария iframe, запазвайки структурата на #player-box непокътната
+        stopCurrentVideo();
 
-        // 1. Активираме таба на сезона
+        // 2. Изчистваме класовете за активна карта, за да приеме сайтът клика дори на същия или последен епизод
+        document.querySelectorAll('.episode-card').forEach(c => {
+            c.classList.remove('active', 'is-active', 'current', 'selected');
+        });
+
+        // 3. Кликваме таба на сезона и след това самата карта
         if (season.tabElement) {
-            triggerRealClick(season.tabElement);
-        }
-
-        // 2. ТРИК ЗА ПОСЛЕДНИТЕ ЕПИЗОДИ:
-        // Сайтът често игнорира клик върху последния епизод, ако смята, че вече е избран.
-        // Затова първо кликваме друг епизод от сезона за ресет на състоянието и след 200ms кликваме желания!
-        const allEps = season.episodes;
-        if (allEps.length > 1) {
-            const resetIdx = (eIndex === 0) ? 1 : 0;
-            if (allEps[resetIdx] && allEps[resetIdx].domElement) {
-                triggerRealClick(allEps[resetIdx].domElement);
-            }
+            season.tabElement.click();
         }
 
         setTimeout(() => {
-            document.querySelectorAll('.episode-card').forEach(c => {
-                c.classList.remove('active', 'is-active', 'current', 'selected');
-            });
             if (ep.domElement) {
-                triggerRealClick(ep.domElement);
+                ep.domElement.click();
             }
-            // Отваряме и пикъра за BG Players, за да принудим DOM менюто да се обнови
-            const bgPickerBtn = document.querySelector('.player-picker[data-player-group="bg"] .player-picker-button');
-            if (bgPickerBtn) triggerRealClick(bgPickerBtn);
-        }, 220);
+        }, 120);
 
         let attempts = 0;
         let triedFallbackBtn = 0;
@@ -340,12 +342,13 @@
                 return;
             }
 
+            // Ако до 1.2 сек не се е появил сам iframe, кликваме бутона в BG Players менюто
             if (attempts === 5 || attempts === 12 || attempts === 20) {
                 const bgBtns = getBgButtons();
                 if (bgBtns.length > 0) {
                     const btnToClick = bgBtns[triedFallbackBtn % bgBtns.length];
                     triedFallbackBtn++;
-                    triggerRealClick(btnToClick);
+                    if (btnToClick) btnToClick.click();
                 }
             }
 
@@ -432,8 +435,7 @@
         if (zone === 'player' || document.body.classList.contains('tv-playing-mode')) {
             loader.style.display = 'none';
             document.body.classList.remove('tv-playing-mode');
-            const playerBox = document.getElementById('player-box');
-            if (playerBox) playerBox.innerHTML = '';
+            stopCurrentVideo();
             zone = 'episodes';
             renderEpisodes();
             updateFocusVisuals();
