@@ -1,5 +1,4 @@
 (function() {
-    // Ако сме попаднали на /episode/ страница, веднага връщаме към главната страница със сезоните
     if (window.location.pathname.indexOf('/episode/') !== -1) {
         window.location.replace('https://zenoplay.to/tv-show/novite-sasedi-2007/');
         return;
@@ -20,9 +19,17 @@
             cards.forEach((card, eIdx) => {
                 const imgEl = card.querySelector('img');
                 const titleEl = card.querySelector('strong');
+                let imgSrc = imgEl ? imgEl.src : '';
+                // Оптимизация 1: Използваме по-леки миниатюри от TMDB за по-бързо рендиране на TV
+                if (imgSrc.indexOf('/w300/') !== -1) {
+                    imgSrc = imgSrc.replace('/w300/', '/w185/');
+                }
+                // Премахваме оригиналната картинка от фоновия сайт, за да не хаби RAM памет
+                if (imgEl) imgEl.remove();
+
                 episodes.push({
                     title: titleEl ? titleEl.innerText.trim() : ('Епизод ' + (eIdx + 1)),
-                    img: imgEl ? imgEl.src : '',
+                    img: imgSrc,
                     href: card.getAttribute('href'),
                     domElement: card
                 });
@@ -38,86 +45,95 @@
 
     if (seasonsData.length === 0) return;
 
+    // Оптимизация 2: Изтриваме изцяло ненужните тежки секции на сайта от DOM паметта
+    const junkSelectors = [
+        'header', 'nav', 'footer', '.site-header', '.site-footer',
+        '.detail-hero', '.recommended-section', '#player-current-episode', '.tv-show-season-select-wrap'
+    ];
+    junkSelectors.forEach(sel => {
+        document.querySelectorAll(sel).forEach(el => el.remove());
+    });
+
     const style = document.createElement('style');
     style.innerHTML = `
-        body { overflow: hidden !important; background: #000 !important; margin: 0 !important; }
-        /* Скриваме горната лента на ZenoPlay и излишните елементи */
-        header, nav, footer, .site-header, .site-footer, .detail-hero, .recommended-section, .player-toolbar, #player-current-episode {
-            display: none !important;
-        }
+        html, body { overflow: hidden !important; background: #000 !important; margin: 0 !important; padding: 0 !important; }
+        .player-toolbar { display: none !important; }
         #tv-custom-overlay {
             position: fixed; inset: 0; z-index: 999990;
-            background: #121212;
+            background: #101010;
             color: #fff; font-family: sans-serif;
             display: flex; flex-direction: column;
-            padding: 24px 36px; box-sizing: border-box;
-            user-select: none;
+            padding: 22px 34px; box-sizing: border-box;
+            user-select: none; contain: layout style paint;
         }
         #tv-header {
             display: flex; align-items: center; justify-content: space-between;
-            margin-bottom: 16px;
+            margin-bottom: 14px;
         }
         #tv-header h1 {
-            margin: 0; font-size: 32px; color: #E50914; font-weight: 800;
+            margin: 0; font-size: 30px; color: #E50914; font-weight: 800;
         }
         #tv-header-right {
-            display: flex; align-items: center; gap: 16px;
+            display: flex; align-items: center; gap: 12px;
         }
-        #tv-status {
-            font-size: 16px; color: #999;
+        .tv-top-btn {
+            padding: 8px 16px; border-radius: 4px; background: #242424;
+            color: #ddd; font-size: 16px; font-weight: bold; border: 3px solid transparent;
         }
-        #tv-update-btn {
-            padding: 8px 16px; border-radius: 4px; background: #262626;
-            color: #ccc; font-size: 16px; font-weight: bold; border: 3px solid transparent;
-        }
-        #tv-update-btn.tv-focused {
+        .tv-top-btn.tv-focused {
             background: #E50914 !important; color: #fff !important; border-color: #fff !important;
         }
         #tv-seasons-row {
-            display: flex; gap: 10px; overflow-x: auto; padding: 6px 2px;
-            scrollbar-width: none; flex-shrink: 0; margin-bottom: 16px;
+            display: flex; gap: 10px; overflow-x: auto; padding: 4px 2px;
+            scrollbar-width: none; flex-shrink: 0; margin-bottom: 14px;
         }
         #tv-seasons-row::-webkit-scrollbar { display: none; }
         .tv-season-btn {
-            padding: 10px 20px; border-radius: 6px; background: #222;
-            color: #ccc; font-size: 19px; font-weight: bold; white-space: nowrap;
+            padding: 10px 20px; border-radius: 5px; background: #202020;
+            color: #bbb; font-size: 19px; font-weight: bold; white-space: nowrap;
             border: 3px solid transparent;
         }
         .tv-season-btn.active-season {
             background: #333; color: #fff; border-color: #666;
         }
         .tv-season-btn.tv-focused {
-            background: #E50914 !important; color: #fff !important;
-            border-color: #fff !important;
+            background: #E50914 !important; color: #fff !important; border-color: #fff !important;
         }
         #tv-episodes-grid {
             display: grid; grid-template-columns: repeat(4, 1fr);
-            gap: 16px; overflow-y: auto; padding: 6px 4px 50px 4px;
-            flex: 1; scrollbar-width: none;
+            gap: 14px; overflow-y: auto; padding: 4px 2px 40px 2px;
+            flex: 1; scrollbar-width: none; contain: content;
         }
         #tv-episodes-grid::-webkit-scrollbar { display: none; }
         .tv-ep-card {
-            background: #1e1e1e; border-radius: 6px; overflow: hidden;
+            background: #1c1c1c; border-radius: 5px; overflow: hidden;
             border: 4px solid transparent;
             display: flex; flex-direction: column; position: relative;
-            height: 180px;
+            height: 175px;
         }
         .tv-ep-card img {
-            width: 100%; height: 125px; object-fit: cover; background: #0a0a0a;
+            width: 100%; height: 122px; object-fit: cover; background: #080808;
         }
         .tv-ep-title {
-            padding: 10px 12px; font-size: 19px; font-weight: bold; color: #ddd;
+            padding: 8px 12px; font-size: 18px; font-weight: bold; color: #ccc;
             display: flex; justify-content: space-between; align-items: center;
         }
+        .tv-ep-card.history-ep {
+            border-color: #2e5c38;
+        }
+        .tv-ep-card.history-ep .tv-ep-title::after {
+            content: '✓ ГЛЕДАН'; font-size: 11px; background: #2e5c38;
+            color: #fff; padding: 2px 6px; border-radius: 3px;
+        }
         .tv-ep-card.watched-ep {
-            border-color: #46d369;
+            border-color: #46d369 !important;
         }
         .tv-ep-card.watched-ep .tv-ep-title::after {
-            content: 'ПОСЛЕДЕН'; font-size: 11px; background: #46d369;
-            color: #000; padding: 2px 6px; border-radius: 3px; font-weight: 900;
+            content: 'ПОСЛЕДЕН' !important; font-size: 11px; background: #46d369 !important;
+            color: #000 !important; padding: 2px 6px; border-radius: 3px; font-weight: 900;
         }
         .tv-ep-card.tv-focused {
-            border-color: #E50914 !important; background: #333 !important;
+            border-color: #E50914 !important; background: #303030 !important;
         }
         .tv-ep-card.tv-focused .tv-ep-title {
             color: #fff !important;
@@ -146,14 +162,26 @@
     `;
     document.head.appendChild(style);
 
+    let watchedSeason = parseInt(localStorage.getItem('tv_last_season') || '0', 10);
+    if (watchedSeason >= seasonsData.length || watchedSeason < 0) watchedSeason = 0;
+    let watchedEp = parseInt(localStorage.getItem('tv_last_ep') || '0', 10);
+    if (watchedEp >= seasonsData[watchedSeason].episodes.length || watchedEp < 0) watchedEp = 0;
+
+    let watchedHistory = {};
+    try {
+        watchedHistory = JSON.parse(localStorage.getItem('tv_watched_history') || '{}');
+    } catch (e) {
+        watchedHistory = {};
+    }
+
     const overlay = document.createElement('div');
     overlay.id = 'tv-custom-overlay';
     overlay.innerHTML = `
         <div id="tv-header">
             <h1>НОВИТЕ СЪСЕДИ</h1>
             <div id="tv-header-right">
-                <div id="tv-status">ОК = Пусни | Назад = Списък със сезони</div>
-                <div id="tv-update-btn">⟳ Обнови</div>
+                <div id="tv-continue-btn" class="tv-top-btn">▶ Продължи: С` + (watchedSeason + 1) + ` Еп ` + (watchedEp + 1) + `</div>
+                <div id="tv-update-btn" class="tv-top-btn">⟳ Обнови</div>
             </div>
         </div>
         <div id="tv-seasons-row"></div>
@@ -175,15 +203,13 @@
         osd.innerText = text;
         osd.style.display = 'block';
         if (osdTimer) clearTimeout(osdTimer);
-        osdTimer = setTimeout(() => { osd.style.display = 'none'; }, 1500);
+        osdTimer = setTimeout(() => { osd.style.display = 'none'; }, 1400);
     }
 
-    let zone = 'episodes'; // 'update', 'seasons', 'episodes', 'player'
-    let sIndex = parseInt(localStorage.getItem('tv_last_season') || '0', 10);
-    if (sIndex >= seasonsData.length || sIndex < 0) sIndex = 0;
-    let eIndex = parseInt(localStorage.getItem('tv_last_ep') || '0', 10);
-    let watchedSeason = sIndex;
-    let watchedEp = eIndex;
+    let zone = 'episodes'; // 'top', 'seasons', 'episodes', 'player'
+    let topIndex = 0; // 0 = Продължи, 1 = Обнови
+    let sIndex = watchedSeason;
+    let eIndex = watchedEp;
     let checkTimer = null;
 
     let seasonBtnNodes = [];
@@ -193,7 +219,9 @@
 
     const seasonsRow = document.getElementById('tv-seasons-row');
     const episodesGrid = document.getElementById('tv-episodes-grid');
+    const continueBtn = document.getElementById('tv-continue-btn');
     const updateBtn = document.getElementById('tv-update-btn');
+    const topBtns = [continueBtn, updateBtn];
     const loaderMsg = document.getElementById('tv-loader-msg');
 
     function renderSeasons() {
@@ -220,9 +248,14 @@
         eps.forEach((ep, idx) => {
             const card = document.createElement('div');
             let cls = 'tv-ep-card';
-            if (sIndex === watchedSeason && idx === watchedEp) cls += ' watched-ep';
+            const key = sIndex + '_' + idx;
+            if (sIndex === watchedSeason && idx === watchedEp) {
+                cls += ' watched-ep';
+            } else if (watchedHistory[key]) {
+                cls += ' history-ep';
+            }
             card.className = cls;
-            card.innerHTML = '<img src="' + ep.img + '" loading="lazy" decoding="async" alt="">' +
+            card.innerHTML = '<img src="' + ep.img + '" decoding="async" alt="">' +
                 '<div class="tv-ep-title"><span>▶ ' + ep.title + '</span></div>';
             episodeCardNodes.push(card);
             frag.appendChild(card);
@@ -245,8 +278,8 @@
         }
 
         let newFocusEl = null;
-        if (zone === 'update') {
-            newFocusEl = updateBtn;
+        if (zone === 'top') {
+            newFocusEl = topBtns[topIndex];
         } else if (zone === 'seasons') {
             newFocusEl = seasonBtnNodes[sIndex];
             if (newFocusEl) {
@@ -265,7 +298,6 @@
         }
     }
 
-    // ОРИГИНАЛНАТА РАБОТЕЩА ФУНКЦИЯ ЗА ПУСКАНЕ НА ЕПИЗОД (която винаги успява на чиста страница)
     function playSelectedEpisode() {
         const season = seasonsData[sIndex];
         const ep = season.episodes[eIndex];
@@ -275,17 +307,35 @@
 
         watchedSeason = sIndex;
         watchedEp = eIndex;
+        watchedHistory[sIndex + '_' + eIndex] = 1;
         localStorage.setItem('tv_last_season', String(sIndex));
         localStorage.setItem('tv_last_ep', String(eIndex));
+        try {
+            localStorage.setItem('tv_watched_history', JSON.stringify(watchedHistory));
+        } catch (e) {}
+
+        continueBtn.innerText = '▶ Продължи: С' + (watchedSeason + 1) + ' Еп ' + (watchedEp + 1);
 
         zone = 'player';
         loaderMsg.innerText = 'Зареждане на ' + season.title + ' - ' + ep.title + '...';
         loader.style.display = 'flex';
 
         if (season.tabElement) season.tabElement.click();
+
+        // Оптимизация за последните епизоди: ако картата е последна или вече активна,
+        // първо кликваме друга карта за 80ms, за да принудим ZenoPlay да рестартира AJAX заявката
+        const allEps = season.episodes;
+        const isLastOrActive = (eIndex === allEps.length - 1) || (ep.domElement && ep.domElement.classList.contains('active'));
+        if (isLastOrActive && allEps.length > 1) {
+            const dummyIdx = (eIndex === 0) ? 1 : 0;
+            if (allEps[dummyIdx] && allEps[dummyIdx].domElement) {
+                allEps[dummyIdx].domElement.click();
+            }
+        }
+
         setTimeout(() => {
             if (ep.domElement) ep.domElement.click();
-        }, 150);
+        }, 160);
 
         let attempts = 0;
         const bgMenu = document.querySelector('.player-picker[data-player-group="bg"] .player-picker-menu');
@@ -294,7 +344,7 @@
         checkTimer = setInterval(() => {
             attempts++;
             const currentBgMenu = document.querySelector('.player-picker[data-player-group="bg"] .player-picker-menu');
-            if (currentBgMenu && currentBgMenu.children.length > 0 && !currentBgMenu.dataset.autoClicked) {
+            if (attempts >= 2 && currentBgMenu && currentBgMenu.children.length > 0 && !currentBgMenu.dataset.autoClicked) {
                 currentBgMenu.dataset.autoClicked = 'true';
                 currentBgMenu.children[0].click();
             }
@@ -310,7 +360,7 @@
                     if (window.AndroidTV && window.AndroidTV.clickCenterAfterDelay) {
                         window.AndroidTV.clickCenterAfterDelay(2200);
                     }
-                }, 700);
+                }, 650);
             } else if (attempts > 40) {
                 clearInterval(checkTimer);
                 checkTimer = null;
@@ -340,12 +390,23 @@
         const epsCount = seasonsData[sIndex].episodes.length;
         const cols = 4;
 
-        if (zone === 'update') {
-            if (dir === 'DOWN') {
+        if (zone === 'top') {
+            if (dir === 'LEFT' && topIndex > 0) {
+                topIndex--;
+            } else if (dir === 'RIGHT' && topIndex < topBtns.length - 1) {
+                topIndex++;
+            } else if (dir === 'DOWN') {
                 zone = 'seasons';
             } else if (dir === 'ENTER') {
-                // При натискане на Обнови презареждаме страницата начисто, за да изтегли новия скрипт от GitHub
-                window.location.replace('https://zenoplay.to/tv-show/novite-sasedi-2007/');
+                if (topIndex === 0) {
+                    sIndex = watchedSeason;
+                    eIndex = watchedEp;
+                    renderSeasons();
+                    renderEpisodes();
+                    playSelectedEpisode();
+                } else {
+                    window.location.replace('https://zenoplay.to/tv-show/novite-sasedi-2007/');
+                }
                 return;
             }
         } else if (zone === 'seasons') {
@@ -358,7 +419,7 @@
                 eIndex = 0;
                 renderEpisodes();
             } else if (dir === 'UP') {
-                zone = 'update';
+                zone = 'top';
             } else if (dir === 'DOWN' || dir === 'ENTER') {
                 zone = 'episodes';
             }
@@ -393,9 +454,6 @@
             checkTimer = null;
         }
         if (zone === 'player' || document.body.classList.contains('tv-playing-mode')) {
-            // КЛЮЧОВ МОМЕНТ: Вместо да чупим DOM-а на сайта при излизане от видеото,
-            // презареждаме главната страница начисто за 0.5 сек!
-            // Така следващият епизод ВИНАГИ се пуска като "1-ви опит" и никога не забива!
             loaderMsg.innerText = 'Връщане към списъка с епизоди...';
             loader.style.display = 'flex';
             const playerBox = document.getElementById('player-box');
@@ -405,6 +463,11 @@
         }
         if (zone === 'episodes') {
             zone = 'seasons';
+            updateFocusVisuals();
+            return true;
+        }
+        if (zone === 'seasons') {
+            zone = 'top';
             updateFocusVisuals();
             return true;
         }
